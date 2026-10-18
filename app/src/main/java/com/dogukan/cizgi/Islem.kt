@@ -31,6 +31,7 @@ object Islem {
     private val istemciler = HashMap<Yazi, TextRecognizer>()
     val bulunan = java.util.concurrent.atomic.AtomicInteger()    // OCR'ın bulduğu balon sayısı
     val basarisiz = java.util.concurrent.atomic.AtomicInteger()  // çevrilemeyen balon sayısı
+    @Volatile var sonHata: String? = null
 
     private fun istemci(d: Yazi): TextRecognizer = synchronized(istemciler) {
         istemciler.getOrPut(d) {
@@ -59,18 +60,22 @@ object Islem {
 
     suspend fun sayfa(url: String, kaynak: Dil, hedef: Dil, referer: String): Bitmap = coroutineScope {
         val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer), if (kaynak.yazi == Yazi.LATIN) MAX_GEN else 1600) }
-        val sonuc: Text = istemci(kaynak.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
-        val esik = if (kaynak.yazi == Yazi.LATIN) 3 else 2
-        val bloklar = sonuc.textBlocks.filter { b ->
-            b.boundingBox != null && b.text.count { it.isLetter() } >= esik
+        val bloklar: List<OcrBlok> = if (kaynak == Dil.JA) {
+            Tess.oku(bmp) // Japonca: Tesseract (dikey yazı modeli)
+        } else {
+            val sonuc: Text = istemci(kaynak.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
+            val esik = if (kaynak.yazi == Yazi.LATIN) 3 else 2
+            sonuc.textBlocks
+                .filter { b -> b.boundingBox != null && b.text.count { it.isLetter() } >= esik }
+                .map { b -> OcrBlok(b.boundingBox!!, metin(b, kaynak)) }
         }
         bulunan.addAndGet(bloklar.size)
         val ceviriler = bloklar.map { b ->
-            async(Dispatchers.IO) { Ceviri.cevir(metin(b, kaynak), kaynak.kod, hedef.kod) }
+            async(Dispatchers.IO) { Ceviri.cevir(b.metin, kaynak.kod, hedef.kod) }
         }.awaitAll()
         basarisiz.addAndGet(ceviriler.count { it == null })
         val c = Canvas(bmp)
-        bloklar.forEachIndexed { i, b -> ceviriler[i]?.let { ciz(c, bmp, b.boundingBox!!, it) } }
+        bloklar.forEachIndexed { i, b -> ceviriler[i]?.let { ciz(c, bmp, b.kutu, it) } }
         bmp
     }
 

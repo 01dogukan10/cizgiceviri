@@ -47,6 +47,7 @@ class Sayfa(val url: String) {
 
 class Vm(private val app: Application) : AndroidViewModel(app) {
     private val depo = Depo(app)
+    init { Tess.ctx = app.applicationContext }
 
     val kayitlar = mutableStateListOf<Kayit>().apply { addAll(depo.kayitlar()) }
     val kategoriler = mutableStateListOf<String>().apply { addAll(depo.kategoriler()) }
@@ -120,7 +121,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
             val t0 = System.currentTimeMillis()
             val kn = kaynak
             val hd = hedef
-            Islem.bulunan.set(0); Islem.basarisiz.set(0)
+            Islem.bulunan.set(0); Islem.basarisiz.set(0); Islem.sonHata = null
             try {
                 val urls = withContext(Dispatchers.IO) { Net.resimBul(url) }
                 if (urls.isEmpty()) { durum = "Resim bulunamadı."; return@launch }
@@ -133,7 +134,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
                             sem.withPermit {
                                 try { s.bmp = Islem.sayfa(s.url, kn, hd, url) }
                                 catch (e: CancellationException) { throw e }
-                                catch (e: Exception) { s.hata = true }
+                                catch (e: Exception) { s.hata = true; Islem.sonHata = e.message }
                                 durum = "Çevriliyor ${bitti.incrementAndGet()}/${sayfalar.size}"
                             }
                         }
@@ -141,7 +142,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
                 }
                 val ad = withContext(Dispatchers.IO) { cbzYaz(url, kat) }
                 val sn = (System.currentTimeMillis() - t0) / 1000.0
-                durum = "Bitti: %.1f sn (sayfa başı %.1f sn). Kayıt: $ad. Balon: ${Islem.bulunan.get()}, çevrilemeyen: ${Islem.basarisiz.get()}".format(sn, sn / sayfalar.size)
+                durum = "Bitti: %.1f sn (sayfa başı %.1f sn). Kayıt: $ad. Balon: ${Islem.bulunan.get()}, çevrilemeyen: ${Islem.basarisiz.get()}".format(sn, sn / sayfalar.size) + (Islem.sonHata?.let { " Hata: $it" } ?: "")
             } catch (e: CancellationException) {
                 durum = "Durduruldu."
             } catch (e: Exception) {
