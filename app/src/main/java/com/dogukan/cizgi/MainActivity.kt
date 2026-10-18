@@ -57,7 +57,12 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
 
     var ekran by mutableStateOf(E.KUTUPHANE)
     var filtre by mutableStateOf<String?>(null) // null=Tümü, ""=Kategorisiz
-    var dil by mutableStateOf(Dil.LATIN)
+    private fun dilBul(s: String, v: Dil) = runCatching { Dil.valueOf(s) }.getOrDefault(v)
+    var kaynak by mutableStateOf(dilBul(depo.kaynak, Dil.EN))
+    var hedef by mutableStateOf(dilBul(depo.hedef, Dil.TR))
+    fun kaynakSec(d: Dil) { kaynak = d; depo.kaynak = d.name }
+    fun hedefSec(d: Dil) { hedef = d; depo.hedef = d.name }
+    fun degis() { val k = kaynak; kaynakSec(hedef); hedefSec(k) }
 
     val sayfalar = mutableStateListOf<Sayfa>()
     var durum by mutableStateOf("")
@@ -77,7 +82,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
         val u = url.trim()
         if (u.isEmpty() || kayitlar.any { it.url == u }) return
         val b = baslik.trim().ifEmpty { u.substringAfter("//").take(50) }
-        kayitlar.add(0, Kayit(u, b, filtre ?: "", dil.name))
+        kayitlar.add(0, Kayit(u, b, filtre ?: "", kaynak.name, hedef.name))
         kayitlariYaz()
     }
     fun kategoriDegistir(k: Kayit, yeni: String) {
@@ -98,7 +103,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
 
     // --- Okuyucu ---
     fun ac(k: Kayit) {
-        dil = runCatching { Dil.valueOf(k.dil) }.getOrDefault(Dil.LATIN)
+        kaynakSec(dilBul(k.dil, Dil.EN)); hedefSec(dilBul(k.hedef, Dil.TR))
         ekran = E.OKUYUCU
         basla(k.url, k.kategori)
     }
@@ -113,6 +118,8 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
             sayfalar.clear()
             durum = "Sayfa alınıyor…"
             val t0 = System.currentTimeMillis()
+            val kn = kaynak
+            val hd = hedef
             try {
                 val urls = withContext(Dispatchers.IO) { Net.resimBul(url) }
                 if (urls.isEmpty()) { durum = "Resim bulunamadı."; return@launch }
@@ -123,7 +130,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
                     sayfalar.map { s ->
                         async(Dispatchers.Default) {
                             sem.withPermit {
-                                try { s.bmp = Islem.sayfa(s.url, dil, url) }
+                                try { s.bmp = Islem.sayfa(s.url, kn, hd, url) }
                                 catch (e: CancellationException) { throw e }
                                 catch (e: Exception) { s.hata = true }
                                 durum = "Çevriliyor ${bitti.incrementAndGet()}/${sayfalar.size}"
@@ -238,8 +245,16 @@ fun Kutuphane(vm: Vm) {
         Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), label = { Text("Bölüm / seri linki") }, singleLine = true)
             OutlinedTextField(baslik, { baslik = it }, Modifier.fillMaxWidth(), label = { Text("Başlık (isteğe bağlı)") }, singleLine = true)
+            Text("Kaynak dil (sayfadaki yazı)", style = MaterialTheme.typography.labelMedium)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Dil.values().forEach { d -> FilterChip(vm.dil == d, { vm.dil = d }, { Text(d.ad) }) }
+                Dil.values().forEach { d -> FilterChip(vm.kaynak == d, { vm.kaynakSec(d) }, { Text(d.ad) }) }
+            }
+            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Text("Hedef dil (çeviri)", style = MaterialTheme.typography.labelMedium)
+                TextButton({ vm.degis() }) { Text("⇄ Değiştir") }
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Dil.values().forEach { d -> FilterChip(vm.hedef == d, { vm.hedefSec(d) }, { Text(d.ad) }) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button({ vm.linkKaydet(url, baslik); url = ""; baslik = "" }, enabled = url.isNotBlank()) { Text("Kaydet") }

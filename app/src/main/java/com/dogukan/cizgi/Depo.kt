@@ -4,7 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class Kayit(val url: String, val baslik: String, val kategori: String, val dil: String)
+data class Kayit(val url: String, val baslik: String, val kategori: String, val dil: String, val hedef: String = "TR")
 
 /** Ayarlar, kategoriler ve kayıtlı linkler (SharedPreferences). */
 class Depo(ctx: Context) {
@@ -13,6 +13,12 @@ class Depo(ctx: Context) {
     var klasorUri: String?
         get() = p.getString("klasor", null)
         set(v) { p.edit().putString("klasor", v).apply() }
+    var kaynak: String
+        get() = p.getString("kaynak", "EN") ?: "EN"
+        set(v) { p.edit().putString("kaynak", v).apply() }
+    var hedef: String
+        get() = p.getString("hedef", "TR") ?: "TR"
+        set(v) { p.edit().putString("hedef", v).apply() }
     var tema: Int
         get() = p.getInt("tema", 0)
         set(v) { p.edit().putInt("tema", v).apply() }
@@ -33,13 +39,13 @@ class Depo(ctx: Context) {
         val a = JSONArray(p.getString("kayitlar", "[]"))
         (0 until a.length()).map {
             val o = a.getJSONObject(it)
-            Kayit(o.getString("u"), o.getString("b"), o.optString("k"), o.optString("d", "LATIN"))
+            Kayit(o.getString("u"), o.getString("b"), o.optString("k"), o.optString("d", "EN"), o.optString("h", "TR"))
         }
     } catch (e: Exception) { emptyList() }
 
     fun kayitlariKaydet(l: List<Kayit>) {
         val a = JSONArray()
-        l.forEach { a.put(JSONObject().put("u", it.url).put("b", it.baslik).put("k", it.kategori).put("d", it.dil)) }
+        l.forEach { a.put(JSONObject().put("u", it.url).put("b", it.baslik).put("k", it.kategori).put("d", it.dil).put("h", it.hedef)) }
         p.edit().putString("kayitlar", a.toString()).apply()
     }
 }

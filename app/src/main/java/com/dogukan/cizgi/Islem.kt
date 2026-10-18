@@ -15,19 +15,28 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.*
 import kotlinx.coroutines.tasks.await
 
-enum class Dil(val ad: String) { LATIN("Latin"), KO("한국어"), JA("日本語"), ZH("中文") }
+enum class Yazi { LATIN, KO, JA, ZH }
+
+/** ad = ekranda görünen ad, kod = Google çeviri kodu, yazi = OCR motoru (yazı sistemi) */
+enum class Dil(val ad: String, val kod: String, val yazi: Yazi) {
+    EN("İngilizce", "en", Yazi.LATIN), TR("Türkçe", "tr", Yazi.LATIN),
+    FR("Fransızca", "fr", Yazi.LATIN), ES("İspanyolca", "es", Yazi.LATIN),
+    DE("Almanca", "de", Yazi.LATIN), IT("İtalyanca", "it", Yazi.LATIN),
+    PT("Portekizce", "pt", Yazi.LATIN), ID("Endonezce", "id", Yazi.LATIN),
+    KO("Korece", "ko", Yazi.KO), JA("Japonca", "ja", Yazi.JA), ZH("Çince", "zh-CN", Yazi.ZH)
+}
 
 object Islem {
     private const val MAX_GEN = 1000
-    private val istemciler = HashMap<Dil, TextRecognizer>()
+    private val istemciler = HashMap<Yazi, TextRecognizer>()
 
-    private fun istemci(d: Dil): TextRecognizer = synchronized(istemciler) {
+    private fun istemci(d: Yazi): TextRecognizer = synchronized(istemciler) {
         istemciler.getOrPut(d) {
             when (d) {
-                Dil.LATIN -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                Dil.KO -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
-                Dil.JA -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
-                Dil.ZH -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+                Yazi.LATIN -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                Yazi.KO -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+                Yazi.JA -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+                Yazi.ZH -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
             }
         }
     }
@@ -46,14 +55,14 @@ object Islem {
         return bmp.copy(Bitmap.Config.ARGB_8888, true)
     }
 
-    suspend fun sayfa(url: String, dil: Dil, referer: String): Bitmap = coroutineScope {
+    suspend fun sayfa(url: String, kaynak: Dil, hedef: Dil, referer: String): Bitmap = coroutineScope {
         val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer)) }
-        val sonuc: Text = istemci(dil).process(InputImage.fromBitmap(bmp, 0)).await()
+        val sonuc: Text = istemci(kaynak.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
         val bloklar = sonuc.textBlocks.filter { b ->
             b.boundingBox != null && b.text.count { it.isLetter() } >= 3
         }
         val ceviriler = bloklar.map { b ->
-            async(Dispatchers.IO) { Ceviri.cevir(b.text.replace("\n", " ")) }
+            async(Dispatchers.IO) { Ceviri.cevir(b.text.replace("\n", " "), kaynak.kod, hedef.kod) }
         }.awaitAll()
         val c = Canvas(bmp)
         bloklar.forEachIndexed { i, b -> ceviriler[i]?.let { ciz(c, bmp, b.boundingBox!!, it) } }
