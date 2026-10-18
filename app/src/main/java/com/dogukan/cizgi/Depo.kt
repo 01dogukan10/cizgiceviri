@@ -14,7 +14,7 @@ class Depo(ctx: Context) {
         get() = p.getString("klasor", null)
         set(v) { p.edit().putString("klasor", v).apply() }
     var kaynak: String
-        get() = p.getString("kaynak", "EN") ?: "EN"
+        get() = p.getString("kaynak", "AUTO") ?: "AUTO"
         set(v) { p.edit().putString("kaynak", v).apply() }
     var hedef: String
         get() = p.getString("hedef", "TR") ?: "TR"

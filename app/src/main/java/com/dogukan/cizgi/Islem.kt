@@ -19,6 +19,7 @@ enum class Yazi { LATIN, KO, JA, ZH }
 
 /** ad = ekranda görünen ad, kod = Google çeviri kodu, yazi = OCR motoru (yazı sistemi) */
 enum class Dil(val ad: String, val kod: String, val yazi: Yazi) {
+    AUTO("Otomatik algıla", "auto", Yazi.LATIN),
     EN("İngilizce", "en", Yazi.LATIN), TR("Türkçe", "tr", Yazi.LATIN),
     FR("Fransızca", "fr", Yazi.LATIN), ES("İspanyolca", "es", Yazi.LATIN),
     DE("Almanca", "de", Yazi.LATIN), IT("İtalyanca", "it", Yazi.LATIN),
@@ -32,6 +33,32 @@ object Islem {
     val bulunan = java.util.concurrent.atomic.AtomicInteger()    // OCR'ın bulduğu balon sayısı
     val basarisiz = java.util.concurrent.atomic.AtomicInteger()  // çevrilemeyen balon sayısı
     @Volatile var sonHata: String? = null
+    @Volatile var otoDil: Dil? = null  // "Otomatik algıla" seçiliyken bölüm için bulunan dil (AUTO = Latin harfli)
+
+    /** Sayfadaki yazının dilini bulur: önce Latin, değilse Japonca/Korece/Çince. İlk bulunan bölüm boyunca kullanılır. */
+    private suspend fun algila(bmp: Bitmap): Dil? {
+        otoDil?.let { return it }
+        val img = InputImage.fromBitmap(bmp, 0)
+        val latin = istemci(Yazi.LATIN).process(img).await().text.count { it.isLetter() && it.code < 0x250 }
+        var sonuc: Dil? = null
+        if (latin >= 60) sonuc = Dil.AUTO
+        else {
+            val ja = istemci(Yazi.JA).process(img).await().text
+            val ko = istemci(Yazi.KO).process(img).await().text
+            val kana = ja.count { it.code in 0x3040..0x30FF }
+            val han = ja.count { it.code in 0x4E00..0x9FFF }
+            val hangul = ko.count { it.code in 0xAC00..0xD7AF }
+            sonuc = when {
+                hangul >= 8 && hangul > kana -> Dil.KO
+                kana >= 8 -> Dil.JA
+                han >= 8 && kana < 3 -> Dil.ZH
+                latin >= 10 -> Dil.AUTO
+                else -> null
+            }
+        }
+        if (sonuc != null) otoDil = sonuc
+        return sonuc
+    }
 
     private fun istemci(d: Yazi): TextRecognizer = synchronized(istemciler) {
         istemciler.getOrPut(d) {
@@ -59,23 +86,38 @@ object Islem {
     }
 
     suspend fun sayfa(url: String, kaynak: Dil, hedef: Dil, referer: String): Bitmap = coroutineScope {
-        val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer), if (kaynak.yazi == Yazi.LATIN) MAX_GEN else 1600) }
-        val bloklar: List<OcrBlok> = if (kaynak == Dil.JA) {
-            Tess.oku(bmp) // Japonca: Tesseract (dikey yazı modeli)
+        val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer), if (kaynak == Dil.AUTO || kaynak.yazi != Yazi.LATIN) 1600 else MAX_GEN) }
+        val k = if (kaynak == Dil.AUTO) (algila(bmp) ?: return@coroutineScope bmp) else kaynak
+        val bloklar: List<OcrBlok> = if (k == Dil.JA) {
+            Tess.oku(bmp) // Japonca: balon balon Tesseract
         } else {
-            val sonuc: Text = istemci(kaynak.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
-            val esik = if (kaynak.yazi == Yazi.LATIN) 3 else 2
+            val sonuc: Text = istemci(k.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
+            val esik = if (k.yazi == Yazi.LATIN) 3 else 2
             sonuc.textBlocks
                 .filter { b -> b.boundingBox != null && b.text.count { it.isLetter() } >= esik }
-                .map { b -> OcrBlok(b.boundingBox!!, metin(b, kaynak)) }
+                .map { b -> OcrBlok(b.boundingBox!!, metin(b, k)) }
         }
         bulunan.addAndGet(bloklar.size)
         val ceviriler = bloklar.map { b ->
-            async(Dispatchers.IO) { Ceviri.cevir(b.metin, kaynak.kod, hedef.kod) }
+            async(Dispatchers.IO) { Ceviri.cevir(b.metin, k.kod, hedef.kod) }
         }.awaitAll()
         basarisiz.addAndGet(ceviriler.count { it == null })
         val c = Canvas(bmp)
-        bloklar.forEachIndexed { i, b -> ceviriler[i]?.let { ciz(c, bmp, b.kutu, it) } }
+        bloklar.forEachIndexed { i, b ->
+            ceviriler[i]?.let { t ->
+                val bl = b.balon
+                if (bl != null) {
+                    // balonun içini (yazıyla birlikte) beyaza boyayıp Türkçeyi balonun içine yaz
+                    val boya = Paint().apply { color = Color.WHITE }
+                    for (j2 in 0 until bl.kutu.height()) if (bl.sag[j2] >= bl.sol[j2])
+                        c.drawRect((bl.kutu.left + bl.sol[j2]).toFloat(), (bl.kutu.top + j2).toFloat(),
+                            (bl.kutu.left + bl.sag[j2] + 1).toFloat(), (bl.kutu.top + j2 + 1).toFloat(), boya)
+                    val ic = Rect(bl.kutu)
+                    ic.inset((ic.width() * 0.12f).toInt(), (ic.height() * 0.12f).toInt())
+                    ciz(c, bmp, ic, t, balon = true)
+                } else ciz(c, bmp, b.kutu, t)
+            }
+        }
         bmp
     }
 
@@ -133,10 +175,10 @@ object Islem {
         return Color.rgb(kr / n, kg / n, kb / n)
     }
 
-    private fun ciz(c: Canvas, bmp: Bitmap, r0: Rect, metin: String) {
-        val bg = zemin(bmp, r0)
-        val r = Rect(r0).apply { inset(-4, -4) }
-        c.drawRoundRect(RectF(r), 8f, 8f, Paint().apply { color = bg })
+    private fun ciz(c: Canvas, bmp: Bitmap, r0: Rect, metin: String, balon: Boolean = false) {
+        val bg = if (balon) Color.WHITE else zemin(bmp, r0)
+        val r = if (balon) Rect(r0) else Rect(r0).apply { inset(-4, -4) }
+        if (!balon) c.drawRoundRect(RectF(r), 8f, 8f, Paint().apply { color = bg })
         val koyu = (Color.red(bg) * 299 + Color.green(bg) * 587 + Color.blue(bg) * 114) / 1000 < 128
         val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = if (koyu) Color.WHITE else Color.BLACK }
         val w = r.width().coerceAtLeast(40)

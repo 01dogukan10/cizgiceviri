@@ -2,6 +2,7 @@ package com.dogukan.cizgi
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Rect
 import com.googlecode.tesseract.android.TessBaseAPI
 import kotlinx.coroutines.Dispatchers
@@ -9,14 +10,13 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
 
-class OcrBlok(val kutu: Rect, val metin: String)
+class OcrBlok(val kutu: Rect, val metin: String, val balon: Balon? = null)
 
-/** Japonca için Tesseract (dikey yazı modeli). Modeller ilk kullanımda indirilir (~5 MB). */
+/** Japonca: önce balonlar bulunur, sonra her balon ayrı ayrı Tesseract ile okunur (dikey yazı modeli). */
 object Tess {
     lateinit var ctx: Context
     private val MODELLER = listOf("jpn_vert", "jpn")
     private const val ADRES = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/"
-    private val SEVIYE = TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE
 
     @Synchronized
     private fun hazirla(): File {
@@ -37,46 +37,46 @@ object Tess {
 
     private fun cjk(s: String) = s.count { it.code in 0x3040..0x30FF || it.code in 0x4E00..0x9FFF }
 
+    /** Balonun içini keser; balonun dışında kalan her şeyi beyaza çevirir (balon çizgisi okunmasın). */
+    private fun kirp(bmp: Bitmap, b: Balon): Bitmap {
+        val w = b.kutu.width()
+        val h = b.kutu.height()
+        val k = Bitmap.createBitmap(bmp, b.kutu.left, b.kutu.top, w, h).copy(Bitmap.Config.ARGB_8888, true)
+        val px = IntArray(w * h)
+        k.getPixels(px, 0, w, 0, 0, w, h)
+        for (j in 0 until h) for (i in 0 until w) if (i < b.sol[j] || i > b.sag[j]) px[j * w + i] = Color.WHITE
+        k.setPixels(px, 0, w, 0, 0, w, h)
+        return k
+    }
+
     suspend fun oku(bmp: Bitmap): List<OcrBlok> {
         val kok = withContext(Dispatchers.IO) { hazirla() }
         return withContext(Dispatchers.Default) {
-            val api = TessBaseAPI() // iş parçacığı güvenli değil: her sayfa için ayrı örnek
+            val baloncuklar = BalonBul.bul(bmp)
+            if (baloncuklar.isEmpty()) return@withContext emptyList<OcrBlok>()
+            val dik = TessBaseAPI() // iş parçacığı güvenli değil: bu sayfa için ayrı örnekler
+            val yat = TessBaseAPI()
             try {
-                if (!api.init(kok.absolutePath, "jpn_vert+jpn")) error("Tesseract başlatılamadı")
-                api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT)
-                api.setImage(bmp)
-                api.getUTF8Text() // tanımayı çalıştırır
-                val iter = api.getResultIterator() ?: return@withContext emptyList<OcrBlok>()
-                val satirlar = ArrayList<OcrBlok>()
-                iter.begin()
-                do {
-                    val t = (iter.getUTF8Text(SEVIYE) ?: "").trim()
-                    val r = iter.getBoundingRect(SEVIYE)
-                    if (r != null && iter.confidence(SEVIYE) >= 50f && cjk(t) >= 2) satirlar.add(OcrBlok(r, t))
-                } while (iter.next(SEVIYE))
-                iter.delete()
-                grupla(satirlar)
+                if (!dik.init(kok.absolutePath, "jpn_vert") || !yat.init(kok.absolutePath, "jpn"))
+                    error("Tesseract başlatılamadı")
+                dik.setPageSegMode(TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK_VERT_TEXT)
+                yat.setPageSegMode(TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK)
+                val sonuc = ArrayList<OcrBlok>()
+                for (b in baloncuklar) {
+                    val k = kirp(bmp, b)
+                    val api = if (b.kutu.height() > b.kutu.width() * 0.9) dik else yat
+                    api.setImage(k)
+                    val t = (api.getUTF8Text() ?: "").replace(Regex("\\s+"), "")
+                    val guven = api.meanConfidence()
+                    k.recycle()
+                    val c = cjk(t)
+                    if (c >= 2 && c * 2 >= t.length && guven >= 20) sonuc.add(OcrBlok(b.kutu, t, b))
+                }
+                sonuc
             } finally {
-                api.recycle()
+                dik.recycle()
+                yat.recycle()
             }
-        }
-    }
-
-    /** Yakın satırları (dikey yazıda sütunları) tek balon olarak birleştirir. */
-    private fun grupla(l: List<OcrBlok>): List<OcrBlok> {
-        val p = IntArray(l.size) { it }
-        fun kok(x: Int): Int { var a = x; while (p[a] != a) { p[a] = p[p[a]]; a = p[a] }; return a }
-        for (i in l.indices) for (j in i + 1 until l.size) {
-            val a = Rect(l[i].kutu).apply { inset(-28, -28) }
-            if (Rect.intersects(a, l[j].kutu)) p[kok(i)] = kok(j)
-        }
-        return l.indices.groupBy { kok(it) }.values.map { idx ->
-            val u = Rect(l[idx[0]].kutu)
-            idx.forEach { u.union(l[it].kutu) }
-            val g = idx.map { l[it] }
-            val dikey = g.count { it.kutu.height() > it.kutu.width() } * 2 > g.size
-            val sirali = if (dikey) g.sortedByDescending { it.kutu.left } else g.sortedBy { it.kutu.top }
-            OcrBlok(u, sirali.joinToString("") { it.metin.replace("\n", "").replace(" ", "") })
         }
     }
 }
