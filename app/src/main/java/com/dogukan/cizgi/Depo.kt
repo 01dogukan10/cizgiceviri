@@ -19,6 +19,9 @@ class Depo(ctx: Context) {
     var hedef: String
         get() = p.getString("hedef", "TR") ?: "TR"
         set(v) { p.edit().putString("hedef", v).apply() }
+    var bildirilen: Int
+        get() = p.getInt("bildirilen", 0)
+        set(v) { p.edit().putInt("bildirilen", v).apply() }
     var tema: Int
         get() = p.getInt("tema", 0)
         set(v) { p.edit().putInt("tema", v).apply() }

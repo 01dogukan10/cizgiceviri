@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -26,7 +27,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.documentfile.provider.DocumentFile
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
@@ -69,6 +77,45 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
     var durum by mutableStateOf("")
     var calisiyor by mutableStateOf(false)
     private var is_: Job? = null
+
+    // --- Güncelleme ---
+    var yeniSurum by mutableStateOf<Surum?>(null)
+    var guncelDurum by mutableStateOf("")
+    private var reddedilen = 0
+
+    init { guncellemeKontrol() }
+
+    fun guncellemeKontrol(manuel: Boolean = false) {
+        viewModelScope.launch {
+            if (manuel) guncelDurum = "Kontrol ediliyor…"
+            try {
+                val s = withContext(Dispatchers.IO) { Guncelle.sonSurum() }
+                when {
+                    s == null -> if (manuel) guncelDurum = "Sürüm bilgisi alınamadı (internet yok ya da GitHub deposu herkese açık değil)."
+                    Guncelle.yeniMi(app, s) -> { if (manuel || s.kod != reddedilen) yeniSurum = s; if (manuel) guncelDurum = "" }
+                    else -> if (manuel) guncelDurum = "Uygulama güncel."
+                }
+            } catch (e: Exception) { if (manuel) guncelDurum = "Hata: ${e.message}" }
+        }
+    }
+
+    fun sonra() { reddedilen = yeniSurum?.kod ?: 0; yeniSurum = null; guncelDurum = "" }
+
+    fun guncelle() {
+        val s = yeniSurum ?: return
+        if (!Guncelle.kurabilir(app)) {
+            Guncelle.izinAc(app)
+            guncelDurum = "Açılan ekranda bu uygulama için yüklemeye izin ver, sonra geri dönüp Güncelle'ye bas."
+            return
+        }
+        viewModelScope.launch {
+            guncelDurum = "İndiriliyor…"
+            try {
+                val f = withContext(Dispatchers.IO) { Guncelle.indir(app, s) }
+                Guncelle.kur(app, f); guncelDurum = ""; yeniSurum = null
+            } catch (e: Exception) { guncelDurum = "Hata: ${e.message}" }
+        }
+    }
 
     // --- Ayarlar ---
     fun temaSec(t: Int) { tema = t; depo.tema = t }
@@ -198,9 +245,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val bildirimIzni = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (Build.VERSION.SDK_INT >= 33) bildirimIzni.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "guncelle", ExistingPeriodicWorkPolicy.UPDATE,
+            PeriodicWorkRequestBuilder<GuncelleIsci>(1, TimeUnit.HOURS)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+        )
         setContent {
             Tema(vm.tema, vm.renk) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -208,6 +264,21 @@ class MainActivity : ComponentActivity() {
                         E.KUTUPHANE -> Kutuphane(vm)
                         E.OKUYUCU -> Okuyucu(vm)
                         E.AYAR -> Ayar(vm) { klasorSec.launch(null) }
+                    }
+                    vm.yeniSurum?.let { s ->
+                        AlertDialog(
+                            onDismissRequest = { vm.sonra() },
+                            title = { Text("Yeni sürüm var") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(s.ad)
+                                    if (s.not.isNotBlank()) Text(s.not.take(300), style = MaterialTheme.typography.bodySmall)
+                                    if (vm.guncelDurum.isNotEmpty()) Text(vm.guncelDurum)
+                                }
+                            },
+                            confirmButton = { TextButton({ vm.guncelle() }) { Text("Güncelle") } },
+                            dismissButton = { TextButton({ vm.sonra() }) { Text("Sonra") } }
+                        )
                     }
                 }
             }
@@ -373,5 +444,12 @@ fun Ayar(vm: Vm, klasorSec: () -> Unit) {
                     .clickable { vm.renkSec(i) })
             }
         }
+
+        Text("Güncelleme", style = MaterialTheme.typography.titleMedium)
+        Text("Sürüm: ${Guncelle.mevcutAd(LocalContext.current)}")
+        Text("Uygulama internete bağlıyken yaklaşık saat başı yeni sürümü kontrol eder. Yeni sürüm varsa bildirim gösterir ve yüklemeden önce sana sorar.",
+            style = MaterialTheme.typography.bodySmall)
+        Button({ vm.guncellemeKontrol(true) }) { Text("Şimdi kontrol et") }
+        if (vm.guncelDurum.isNotEmpty()) Text(vm.guncelDurum)
     }
 }
