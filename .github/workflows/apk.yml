@@ -2,17 +2,39 @@ name: APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: 17 }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.9" }
+      - name: Sabit imza anahtarı
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_B64 }}
+          KS_PASS_IN: ${{ secrets.KEYSTORE_PASS }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/anahtar.p12"
+            echo "KS_PATH=$RUNNER_TEMP/anahtar.p12" >> "$GITHUB_ENV"
+            echo "KS_PASS=$KS_PASS_IN" >> "$GITHUB_ENV"
+          else
+            echo "UYARI: KEYSTORE_B64 secret'ı yok, geçici anahtarla imzalanıyor (güncelleme üstüne kurulmaz)."
+          fi
       - run: gradle assembleDebug --no-daemon
+      - run: cp app/build/outputs/apk/debug/*.apk cizgi.apk
       - uses: actions/upload-artifact@v4
         with:
           name: CizgiCevirici-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: cizgi.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Sürüm ${{ github.run_number }}
+          body: ${{ github.event.head_commit.message }}
+          files: cizgi.apk
+          make_latest: true
