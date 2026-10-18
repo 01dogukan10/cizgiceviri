@@ -66,6 +66,7 @@ object Tess {
      */
     suspend fun oku(bmp: Bitmap, mlkit: suspend (Bitmap) -> String): List<OcrBlok> {
         val baloncuklar = withContext(Dispatchers.Default) { BalonBul.bul(bmp) }
+        Islem.tespit.addAndGet(baloncuklar.size)
         if (baloncuklar.isEmpty()) return emptyList()
         val kok = try {
             withContext(Dispatchers.IO) { hazirla() }

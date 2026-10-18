@@ -33,29 +33,33 @@ object Islem {
     val bulunan = java.util.concurrent.atomic.AtomicInteger()    // OCR'ın bulduğu balon sayısı
     val basarisiz = java.util.concurrent.atomic.AtomicInteger()  // çevrilemeyen balon sayısı
     @Volatile var sonHata: String? = null
+    @Volatile var detay: String? = null                          // dil algılama sayıları (tanı için)
+    val tespit = java.util.concurrent.atomic.AtomicInteger()      // balon bulucunun bulduğu balon sayısı (Japonca)
     @Volatile var otoDil: Dil? = null  // "Otomatik algıla" seçiliyken bölüm için bulunan dil (AUTO = Latin harfli)
 
-    /** Sayfadaki yazının dilini bulur: önce Latin, değilse Japonca/Korece/Çince. İlk bulunan bölüm boyunca kullanılır. */
+    /**
+     * Sayfadaki yazının dilini bulur. Latin okuyucu Japonca/Korece sayfada gürültüden sahte Latin harf
+     * üretebildiği için önce Japonca ve Korece okuyucular denenir: kana (hiragana/katakana) sadece
+     * Japoncada, hangul sadece Korecede bulunur. Hiçbiri yoksa Latin harfli kabul edilir.
+     * Yazısı az sayfada (kapak vb.) null döner, sonraki sayfada yeniden denenir.
+     */
     private suspend fun algila(bmp: Bitmap): Dil? {
         otoDil?.let { return it }
         val img = InputImage.fromBitmap(bmp, 0)
+        val ja = istemci(Yazi.JA).process(img).await().text
+        val ko = istemci(Yazi.KO).process(img).await().text
         val latin = istemci(Yazi.LATIN).process(img).await().text.count { it.isLetter() && it.code < 0x250 }
-        var sonuc: Dil? = null
-        if (latin >= 60) sonuc = Dil.AUTO
-        else {
-            val ja = istemci(Yazi.JA).process(img).await().text
-            val ko = istemci(Yazi.KO).process(img).await().text
-            val kana = ja.count { it.code in 0x3040..0x30FF }
-            val han = ja.count { it.code in 0x4E00..0x9FFF }
-            val hangul = ko.count { it.code in 0xAC00..0xD7AF }
-            sonuc = when {
-                hangul >= 8 && hangul > kana -> Dil.KO
-                kana >= 8 -> Dil.JA
-                han >= 8 && kana < 3 -> Dil.ZH
-                latin >= 10 -> Dil.AUTO
-                else -> null
-            }
+        val kana = ja.count { it.code in 0x3040..0x30FF }
+        val han = ja.count { it.code in 0x4E00..0x9FFF }
+        val hangul = ko.count { it.code in 0xAC00..0xD7AF }
+        val sonuc: Dil? = when {
+            hangul >= 6 && hangul > kana -> Dil.KO
+            kana >= 5 -> Dil.JA
+            han >= 8 -> Dil.ZH
+            latin >= 20 -> Dil.AUTO
+            else -> null
         }
+        detay = "kana=$kana han=$han hangul=$hangul latin=$latin"
         if (sonuc != null) otoDil = sonuc
         return sonuc
     }
