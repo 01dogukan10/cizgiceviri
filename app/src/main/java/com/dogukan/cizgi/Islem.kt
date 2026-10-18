@@ -62,11 +62,45 @@ object Islem {
             b.boundingBox != null && b.text.count { it.isLetter() } >= 3
         }
         val ceviriler = bloklar.map { b ->
-            async(Dispatchers.IO) { Ceviri.cevir(b.text.replace("\n", " "), kaynak.kod, hedef.kod) }
+            async(Dispatchers.IO) { Ceviri.cevir(metin(b, kaynak), kaynak.kod, hedef.kod) }
         }.awaitAll()
         val c = Canvas(bmp)
         bloklar.forEachIndexed { i, b -> ceviriler[i]?.let { ciz(c, bmp, b.boundingBox!!, it) } }
         bmp
+    }
+
+    // --- OCR metin düzeltme ---
+    private val SAYI_HARF = mapOf('0' to 'O', '1' to 'I', '5' to 'S', '6' to 'G', '8' to 'B')
+    private val SIRA = Regex("^\\d+(st|nd|rd|th|am|pm)$", RegexOption.IGNORE_CASE)
+    private val KELIME = Regex("[\\p{L}\\p{N}]+")
+    private const val TIRE = "-\u2010\u2011\u2012"
+
+    /** Harflerin arasına karışan rakamları düzeltir: CAR60 -> CARGO, W0RLD -> WORLD. */
+    fun duzelt(s: String): String = KELIME.replace(s) { m ->
+        val t = m.value
+        val harf = t.count { it.isLetter() }
+        val rakam = t.count { it.isDigit() }
+        val atla = rakam == 0 || harf < 2 || harf < rakam || !t[0].isLetter() ||
+            SIRA.matches(t) || t.any { it.isDigit() && it !in SAYI_HARF }
+        if (atla) t else t.map { SAYI_HARF[it] ?: it }.joinToString("")
+    }
+
+    /** Bloğun satırlarını birleştirir; satır sonundaki tireyle bölünmüş kelimeleri (INJEC- / TION) tek kelime yapar. */
+    fun metin(b: Text.TextBlock, kaynak: Dil): String {
+        val satirlar = b.lines.map { it.text.trim() }.filter { it.isNotEmpty() }
+        if (kaynak.yazi != Yazi.LATIN) return satirlar.joinToString(" ")
+        val sb = StringBuilder()
+        for (s in satirlar) {
+            if (sb.isEmpty()) { sb.append(s); continue }
+            if (sb.last() in TIRE && s.first().isLetter()) {
+                val parca = sb.dropLast(1).takeLastWhile { it.isLetter() }
+                if (parca.length >= 2) sb.setLength(sb.length - 1) // SUDDEN- LY -> SUDDENLY
+                sb.append(s)                                        // W- WHAT -> W-WHAT (kekeleme, tire kalır)
+            } else {
+                sb.append(' ').append(s)
+            }
+        }
+        return duzelt(sb.toString())
     }
 
     private fun zemin(bmp: Bitmap, r: Rect): Int {
