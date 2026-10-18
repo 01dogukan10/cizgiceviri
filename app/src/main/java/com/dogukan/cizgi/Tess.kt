@@ -49,34 +49,54 @@ object Tess {
         return k
     }
 
-    suspend fun oku(bmp: Bitmap): List<OcrBlok> {
-        val kok = withContext(Dispatchers.IO) { hazirla() }
-        return withContext(Dispatchers.Default) {
-            val baloncuklar = BalonBul.bul(bmp)
-            if (baloncuklar.isEmpty()) return@withContext emptyList<OcrBlok>()
-            val dik = TessBaseAPI() // iş parçacığı güvenli değil: bu sayfa için ayrı örnekler
-            val yat = TessBaseAPI()
-            try {
-                if (!dik.init(kok.absolutePath, "jpn_vert") || !yat.init(kok.absolutePath, "jpn"))
-                    error("Tesseract başlatılamadı")
-                dik.setPageSegMode(TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK_VERT_TEXT)
-                yat.setPageSegMode(TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK)
-                val sonuc = ArrayList<OcrBlok>()
-                for (b in baloncuklar) {
-                    val k = kirp(bmp, b)
-                    val api = if (b.kutu.height() > b.kutu.width() * 0.9) dik else yat
-                    api.setImage(k)
-                    val t = (api.getUTF8Text() ?: "").replace(Regex("\\s+"), "")
-                    val guven = api.meanConfidence()
-                    k.recycle()
-                    val c = cjk(t)
-                    if (c >= 2 && c * 2 >= t.length && guven >= 20) sonuc.add(OcrBlok(b.kutu, t, b))
+    private fun tessAc(kok: File, dil: String, psm: Int): TessBaseAPI? {
+        val a = TessBaseAPI() // iş parçacığı güvenli değil: bu sayfa için ayrı örnekler
+        if (!a.init(kok.absolutePath, dil)) {
+            a.recycle()
+            Islem.sonHata = "Tesseract başlatılamadı ($dil)"
+            return null
+        }
+        a.setPageSegMode(psm)
+        return a
+    }
+
+    /**
+     * Her balonu hem Tesseract hem ML Kit ile okur, daha çok Japonca karakter bulanı seçer.
+     * Tesseract modeli inmezse yalnızca ML Kit ile devam eder.
+     */
+    suspend fun oku(bmp: Bitmap, mlkit: suspend (Bitmap) -> String): List<OcrBlok> {
+        val baloncuklar = withContext(Dispatchers.Default) { BalonBul.bul(bmp) }
+        if (baloncuklar.isEmpty()) return emptyList()
+        val kok = try {
+            withContext(Dispatchers.IO) { hazirla() }
+        } catch (e: Exception) {
+            Islem.sonHata = "Japonca modeli indirilemedi: ${e.message}"
+            null
+        }
+        val dik = kok?.let { tessAc(it, "jpn_vert", TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK_VERT_TEXT) }
+        val yat = kok?.let { tessAc(it, "jpn", TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK) }
+        try {
+            val sonuc = ArrayList<OcrBlok>()
+            for (b in baloncuklar) {
+                val k = kirp(bmp, b)
+                val adaylar = ArrayList<String>()
+                val api = if (b.kutu.height() > b.kutu.width() * 0.9) dik else yat
+                if (api != null) {
+                    adaylar.add(withContext(Dispatchers.Default) {
+                        api.setImage(k)
+                        api.getUTF8Text() ?: ""
+                    })
                 }
-                sonuc
-            } finally {
-                dik.recycle()
-                yat.recycle()
+                try { adaylar.add(mlkit(k)) } catch (_: Exception) { }
+                k.recycle()
+                val en = adaylar.map { it.replace(Regex("\\s+"), "") }.maxByOrNull { cjk(it) } ?: ""
+                val c = cjk(en)
+                if (c >= 2 && c * 2 >= en.length) sonuc.add(OcrBlok(b.kutu, en, b))
             }
+            return sonuc
+        } finally {
+            dik?.recycle()
+            yat?.recycle()
         }
     }
 }

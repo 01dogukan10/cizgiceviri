@@ -89,13 +89,11 @@ object Islem {
         val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer), if (kaynak == Dil.AUTO || kaynak.yazi != Yazi.LATIN) 1600 else MAX_GEN) }
         val k = if (kaynak == Dil.AUTO) (algila(bmp) ?: return@coroutineScope bmp) else kaynak
         val bloklar: List<OcrBlok> = if (k == Dil.JA) {
-            Tess.oku(bmp) // Japonca: balon balon Tesseract
+            // Japonca: balon balon okur; balon bulunamazsa ya da hiçbiri okunamazsa tüm sayfayı ML Kit ile okur
+            val t = Tess.oku(bmp) { c -> istemci(Yazi.JA).process(InputImage.fromBitmap(c, 0)).await().text }
+            if (t.isNotEmpty()) t else mlkitBloklar(bmp, k)
         } else {
-            val sonuc: Text = istemci(k.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
-            val esik = if (k.yazi == Yazi.LATIN) 3 else 2
-            sonuc.textBlocks
-                .filter { b -> b.boundingBox != null && b.text.count { it.isLetter() } >= esik }
-                .map { b -> OcrBlok(b.boundingBox!!, metin(b, k)) }
+            mlkitBloklar(bmp, k)
         }
         bulunan.addAndGet(bloklar.size)
         val ceviriler = bloklar.map { b ->
@@ -119,6 +117,14 @@ object Islem {
             }
         }
         bmp
+    }
+
+    private suspend fun mlkitBloklar(bmp: Bitmap, k: Dil): List<OcrBlok> {
+        val sonuc: Text = istemci(k.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
+        val esik = if (k.yazi == Yazi.LATIN) 3 else 2
+        return sonuc.textBlocks
+            .filter { b -> b.boundingBox != null && b.text.count { it.isLetter() } >= esik }
+            .map { b -> OcrBlok(b.boundingBox!!, metin(b, k)) }
     }
 
     // --- OCR metin düzeltme ---
