@@ -29,6 +29,8 @@ enum class Dil(val ad: String, val kod: String, val yazi: Yazi) {
 object Islem {
     private const val MAX_GEN = 1000
     private val istemciler = HashMap<Yazi, TextRecognizer>()
+    val bulunan = java.util.concurrent.atomic.AtomicInteger()    // OCR'ın bulduğu balon sayısı
+    val basarisiz = java.util.concurrent.atomic.AtomicInteger()  // çevrilemeyen balon sayısı
 
     private fun istemci(d: Yazi): TextRecognizer = synchronized(istemciler) {
         istemciler.getOrPut(d) {
@@ -41,29 +43,32 @@ object Islem {
         }
     }
 
-    private fun yukle(b: ByteArray): Bitmap {
+    private fun yukle(b: ByteArray, max: Int): Bitmap {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(b, 0, b.size, o)
         var ss = 1
-        while (o.outWidth / (ss * 2) >= MAX_GEN) ss *= 2
+        while (o.outWidth / (ss * 2) >= max) ss *= 2
         var bmp = BitmapFactory.decodeByteArray(b, 0, b.size, BitmapFactory.Options().apply { inSampleSize = ss })
             ?: error("Resim açılamadı")
-        if (bmp.width > MAX_GEN) {
-            val h = bmp.height * MAX_GEN / bmp.width
-            bmp = Bitmap.createScaledBitmap(bmp, MAX_GEN, h, true)
+        if (bmp.width > max) {
+            val h = bmp.height * max / bmp.width
+            bmp = Bitmap.createScaledBitmap(bmp, max, h, true)
         }
         return bmp.copy(Bitmap.Config.ARGB_8888, true)
     }
 
     suspend fun sayfa(url: String, kaynak: Dil, hedef: Dil, referer: String): Bitmap = coroutineScope {
-        val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer)) }
+        val bmp = withContext(Dispatchers.IO) { yukle(Net.indir(url, referer), if (kaynak.yazi == Yazi.LATIN) MAX_GEN else 1600) }
         val sonuc: Text = istemci(kaynak.yazi).process(InputImage.fromBitmap(bmp, 0)).await()
+        val esik = if (kaynak.yazi == Yazi.LATIN) 3 else 2
         val bloklar = sonuc.textBlocks.filter { b ->
-            b.boundingBox != null && b.text.count { it.isLetter() } >= 3
+            b.boundingBox != null && b.text.count { it.isLetter() } >= esik
         }
+        bulunan.addAndGet(bloklar.size)
         val ceviriler = bloklar.map { b ->
             async(Dispatchers.IO) { Ceviri.cevir(metin(b, kaynak), kaynak.kod, hedef.kod) }
         }.awaitAll()
+        basarisiz.addAndGet(ceviriler.count { it == null })
         val c = Canvas(bmp)
         bloklar.forEachIndexed { i, b -> ceviriler[i]?.let { ciz(c, bmp, b.boundingBox!!, it) } }
         bmp
@@ -87,6 +92,13 @@ object Islem {
 
     /** Bloğun satırlarını birleştirir; satır sonundaki tireyle bölünmüş kelimeleri (INJEC- / TION) tek kelime yapar. */
     fun metin(b: Text.TextBlock, kaynak: Dil): String {
+        if (kaynak.yazi == Yazi.JA || kaynak.yazi == Yazi.ZH) {
+            var l = b.lines.filter { it.text.isNotBlank() }
+            // Dikey yazı: sütunlar sağdan sola okunur, kelimeler arasında boşluk yoktur
+            val dikey = l.count { (it.boundingBox?.height() ?: 0) > (it.boundingBox?.width() ?: 0) } * 2 > l.size
+            if (dikey) l = l.sortedByDescending { it.boundingBox?.left ?: 0 }
+            return l.joinToString("") { it.text.trim() }
+        }
         val satirlar = b.lines.map { it.text.trim() }.filter { it.isNotEmpty() }
         if (kaynak.yazi != Yazi.LATIN) return satirlar.joinToString(" ")
         val sb = StringBuilder()

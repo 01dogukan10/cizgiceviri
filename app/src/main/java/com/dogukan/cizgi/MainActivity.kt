@@ -120,6 +120,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
             val t0 = System.currentTimeMillis()
             val kn = kaynak
             val hd = hedef
+            Islem.bulunan.set(0); Islem.basarisiz.set(0)
             try {
                 val urls = withContext(Dispatchers.IO) { Net.resimBul(url) }
                 if (urls.isEmpty()) { durum = "Resim bulunamadı."; return@launch }
@@ -140,7 +141,7 @@ class Vm(private val app: Application) : AndroidViewModel(app) {
                 }
                 val ad = withContext(Dispatchers.IO) { cbzYaz(url, kat) }
                 val sn = (System.currentTimeMillis() - t0) / 1000.0
-                durum = "Bitti: %.1f sn (sayfa başı %.1f sn). Kayıt: $ad".format(sn, sn / sayfalar.size)
+                durum = "Bitti: %.1f sn (sayfa başı %.1f sn). Kayıt: $ad. Balon: ${Islem.bulunan.get()}, çevrilemeyen: ${Islem.basarisiz.get()}".format(sn, sn / sayfalar.size)
             } catch (e: CancellationException) {
                 durum = "Durduruldu."
             } catch (e: Exception) {
